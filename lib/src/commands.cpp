@@ -2,7 +2,8 @@
 
 #include "comm.hpp"
 #include "log.hpp"
-
+#include <chrono>
+#include <thread>
 namespace fcwt {
 
 namespace {
@@ -97,11 +98,12 @@ uint8_t message10[] =
 // after that request image info
 //    10:00:00:00: 01:00:08:10: 2c:00:00:00: 01:00:00:00
 // -> 9a:00:00:00: 02:00:08:10: 2c:00:00:00: 01:00:00:10: 01:38:00:00:
-// 68:81:08:00:
+// 68:81:08:00: // this is the image size
 // 01:b9:42:29:00:00:40:01:00:00:f0:00:00:00:f0:06:00:00:a0:04:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:0d:44:00:53:00:43:00:46:00:30:00:35:00:39:00:31:00:2e:00:4a:00:50:00:47:00:00:00:10:32:00:30:00:31:00:36:00:30:00:31:00:30:00:32:00:54:00:31:00:35:00:30:00:31:00:33:00:36:00:00:00:00:0e:4f:00:72:00:69:00:65:00:6e:00:74:00:61:00:74:00:69:00:6f:00:6e:00:3a:00:31:00:00:00
 // get actual image in full size
-//    18:00:00:00: 01:00:1b:10: 30:00:00:00: 01:00:00:00: 00:00:00:00:
-//    68:81:08:00 // last one is image id?
+//    18:00:00:00: 01:00:1b:10: 30:00:00:00: 01:00:00:00:
+//    00:00:00:00: // offset from the file beginning. Usefull when downloading in multiple parts.
+//    68:81:08:00  // image size
 // -> image data
 // -> 10:00:00:00: 03:00:01:20: 30:00:00:00: 68:81:08:00 // image complete
 
@@ -405,6 +407,140 @@ bool init_control_connection(native_socket const sockfd, char const* deviceName,
   return true;
 }
 
+bool init_receive_connection(native_socket const sockfd, char const* deviceName,
+                             camera_capabilities* caps) {
+  if (sockfd <= 0) return false;
+
+  if (!deviceName || !deviceName[0]) deviceName = "CameraClient";
+
+  LOG_INFO_FORMAT("init_receive_connection (socket %lld)", static_cast<long long>(sockfd));
+  auto const reg_msg = generate_registration_message(deviceName);
+  LOG_INFO("send hello");
+  fuji_send(sockfd, &reg_msg, sizeof(reg_msg));
+
+  uint8_t buffer[1024];
+  size_t const receivedBytes = fuji_receive(sockfd, buffer);
+  uint8_t const message1_response_error[] = {0x05, 0x00, 0x00, 0x00,
+                                             0x19, 0x20, 0x00, 0x00};
+
+  uint8_t const message_end[] = {0xff, 0xff, 0xff, 0xff};
+
+  if (receivedBytes == sizeof(message1_response_error) &&
+      memcmp(buffer, message1_response_error, receivedBytes) == 0) {
+	  return false;
+  }
+  auto msg2 = make_static_message(message_type::start, 0x01, 0x00, 0x00, 0x00);
+  fuji_message(
+      sockfd, make_static_message(message_type::start, 0x01, 0x00, 0x00, 0x00));
+  
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+  fuji_send(sockfd,  make_static_message(message_type::single_part, 0x12, 0xd2, 0x00, 0x00));
+
+  fuji_receive_log(sockfd, buffer);
+
+  auto const msg4_1 =
+  make_static_message(message_type::two_part, 0x01, 0xdf, 0x00, 0x00);
+  //remote : 05 00 , receive : 08 00
+  auto const msg4_2 = make_static_message_followup(msg4_1, 0x08, 0x00);
+  fuji_twopart_message(sockfd, msg4_1, msg4_2);
+  
+  // 'receive mode': 0x21, 'browse mode': 0x22, 'geo mode': 0x31, 'remote mode':
+  // 0x24
+  fuji_send(sockfd, make_static_message(message_type::single_part, 0x21, 0xdf,
+                                        0x00, 0x00));
+  fuji_receive_log(sockfd, buffer);
+  fuji_receive_log(sockfd, buffer);
+
+  // 'receive mode': 0x21, 'browse mode': 0x22, 'geo mode': 0x31
+  auto const msg6_1 =
+      make_static_message(message_type::two_part, 0x21, 0xdf, 0x00, 0x00);
+  // 'receive mode', 'browse mode': 0x03 0x00 0x00 0x00, 'geo mode': 0x02, 0x00,
+  // 0x00, 0x00, remote :0x04, 0x00, 0x02, 0x00
+  auto const msg6_2 =
+      make_static_message_followup(msg6_1, 0x03, 0x00, 0x00, 0x00);
+  fuji_twopart_message(sockfd, msg6_1, msg6_2);
+
+  int first_reply_length = 0;
+  auto const msg = generate<status_request_message>();
+  int image = 1;
+  while(1)
+  {
+    fuji_send(sockfd, &msg, sizeof(msg));
+    
+    first_reply_length = fuji_receive(sockfd, buffer);
+	
+    if(first_reply_length > 12){
+		get_image(sockfd,  image);
+        image++;
+	}
+	else
+	{
+       if ( first_reply_length == sizeof(message_end) && memcmp(buffer, message_end, first_reply_length) == 0)
+       {
+	    return true;
+       }
+		first_reply_length = fuji_receive(sockfd, buffer);
+        if(first_reply_length > 10){
+            get_image( sockfd,  image);
+            image++;
+        }
+        else
+        {
+            if ( first_reply_length == sizeof(message_end) && memcmp(buffer, message_end, first_reply_length) == 0)
+            {
+                return true;
+            }
+        }
+	}
+  }
+}
+
+bool get_image(native_socket sockfd, int image)
+{
+    LOG_INFO("received request, send image_info_by_index");
+    uint8_t buffer[1024];
+
+    fuji_send(sockfd,  make_static_message(message_type::image_info_by_index, 0x01, 0x00, 0x00, 0x00));
+    
+    while( fuji_receive_log(sockfd, buffer) < 150)
+    {
+        LOG_INFO("waiting image info from camera");
+    }
+    
+    LOG_INFO("request full image");
+    
+    char file_name[13];
+    for(int i = 0 ; i <= 11 ; i++)
+    {
+        memcpy(&file_name[i], &buffer[61+2*i], 1);
+    }
+    LOG_INFO_FORMAT("asking for file : %s",file_name);
+    
+    auto msg_5_1 = make_static_message(message_type::full_image, 0x01, 0x00, 0x00,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0xb5, 0xe2);
+    memcpy(&msg_5_1.data[8],&buffer[16],4);
+    LOG_INFO_FORMAT("sizeof message = %d", sizeof(msg_5_1));
+    
+    fuji_send(sockfd,  &msg_5_1, sizeof(msg_5_1));
+        fuji_receive_log(sockfd, buffer);
+        std::vector<uint8_t> buffer2(1024 * 1024*256);
+    size_t receivedBytes =
+        fuji_receive(sockfd, buffer2.data(), buffer2.size());
+    LOG_INFO_FORMAT("image_stream_main received %zd bytes", receivedBytes);
+
+    FILE* file = fopen(file_name, "wb");
+    int header = 8;  // not sure what's in the first 14 bytes
+    if (file) {
+        
+        fwrite(&buffer2[header], receivedBytes-header, 1, file);
+        fclose(file);
+        header += receivedBytes;
+    } else {
+        LOG_WARN_FORMAT("image_stream_main Failed to create file %s", file_name);
+    }
+        
+}
+
 void terminate_control_connection(native_socket sockfd) {
   if (sockfd <= 0) return;
 
@@ -422,7 +558,7 @@ bool shutter(native_socket const sockfd) {
       sockfd, make_static_message(message_type::shutter, 0x00, 0x00, 0x00, 0x00,
                                   0x00, 0x00, 0x00, 0x00));
 
-#if 0
+//#if 0
   // Not sure why we don't get the image as response
   uint8_t buffer[20 * 1024];
   uint32_t receivedBytes = 0;
@@ -436,7 +572,7 @@ bool shutter(native_socket const sockfd) {
     lastMsgId = reqImg.id;
     fuji_send(sockfd, reqImg);
 
-    receivedBytes = fuji_receive(sockfd, buffer);
+    receivedBytes = fuji_receive_log(sockfd, buffer);
     LOG_INFO_FORMAT("received %d bytes", receivedBytes);
     print_hex(buffer, receivedBytes);
     retry = receivedBytes <= 8;
@@ -446,7 +582,7 @@ bool shutter(native_socket const sockfd) {
     print_hex(buffer, receivedBytes);
   }
   return is_success_response(lastMsgId, buffer, receivedBytes);
-#endif
+//#endif
 }
 
 static bool parse_film_simulation_mode(uint32_t value,

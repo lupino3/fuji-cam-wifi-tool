@@ -47,11 +47,12 @@ void image_stream_main(std::atomic<bool>& flag) {
   }
 }
 
-char const* comamndStrings[] = {"connect", "shutter", "stream", "info",
+char const* comamndStrings[] = {"connect", "receive", "shutter", "stream", "info",
                                 "set_iso", "aperture", "white_balance" };
 
 enum class command {
   connect,
+  receive,
   shutter,
   stream,
   info,
@@ -120,6 +121,16 @@ int main() {
 
     command cmd = parse_command(splitLine[0]);
     switch (cmd) {
+      case command::receive:{
+        if (sockfd <= 0) {
+          sockfd = connect_to_camera(control_server_port);
+          if (!init_receive_connection(sockfd, "HackedClient", &caps))
+            printf("failure\n");
+        } else {
+          printf("already connected\n");
+        }
+      } break;
+        
       case command::connect: {
         if (sockfd <= 0) {
           sockfd = connect_to_camera(control_server_port);

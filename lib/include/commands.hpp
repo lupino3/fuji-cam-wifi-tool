@@ -16,11 +16,16 @@ namespace fcwt {
 
 bool init_control_connection(native_socket sockfd, char const* deviceName,
                              camera_capabilities* caps);
+bool init_receive_connection(native_socket sockfd, char const* deviceName,
+                             camera_capabilities* caps);
+
 void terminate_control_connection(native_socket sockfd);
 
 bool shutter(native_socket const sockfd);
 
 bool current_settings(native_socket sockfd, camera_settings& settings);
+
+bool get_image(native_socket sockfd, int image);
 
 enum aperture_f_stop {
     aperture_open_third_stop,
