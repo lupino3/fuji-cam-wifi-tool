@@ -519,7 +519,7 @@ bool get_image(native_socket sockfd, int image)
     
     auto msg_5_1 = make_static_message(message_type::full_image, 0x01, 0x00, 0x00,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0xb5, 0xe2);
     memcpy(&msg_5_1.data[8],&buffer[16],4);
-    LOG_INFO_FORMAT("sizeof message = %d", sizeof(msg_5_1));
+    LOG_INFO_FORMAT("sizeof message = %zu", sizeof(msg_5_1));
     
     fuji_send(sockfd,  &msg_5_1, sizeof(msg_5_1));
         fuji_receive_log(sockfd, buffer);
